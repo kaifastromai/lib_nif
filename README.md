@@ -1,5 +1,5 @@
 # Overview
-Nif (New Image Format) is an extremely simple media format for storing images and videos losslessly. It is designed to be straightforward to use, understand and implement. A serializer and deserializer can be trivially implemented within less than 200 lines of code, depending upon the language of choice. Nif files have .nif (for uncompressed images), .nvf (for uncompressed videos), .nifz (for compressed images) and .nvfz (for compressed videos) extensions. Currently,no compression is supported. 
+Nif (New Image Format) is an extremely simple media format for storing images and videos losslessly. It is designed to be straightforward to use, understand and implement. A serializer and deserializer can be trivially implemented within less than 200 lines of code, depending upon the language of choice. Nif files have .nif (for uncompressed images), .nvf (for uncompressed videos), .nifz (for compressed images) and .nvfz (for compressed videos) extensions. Currently,no compression is supported. Importantly, all nif data is serialized in Big-Endian (network ordering).
 
 ## Structure
 Nif is a simple, flat file format encoded in binary. It is structured as follows:
