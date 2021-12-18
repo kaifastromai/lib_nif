@@ -11,9 +11,9 @@ Nif is a simple, flat file format encoded in binary. It is structured as follows
     - Image height: 4 bytes, the height of the image in pixels (int32).
     - Pixel storage format: 4 bytes, the format of the image (int32). Can be one of the following:
         - 0: RGBA8888I32 (RGBA 8-bit per pixel, 32-bit integer)
-        - 1: RGB888 (RGB 8-bit per pixel, packed)
+        - 1: RGB888I32 (RGB 8-bit per pixel)
         - 2: RGBA444I16 (RGBA 4-bit per pixel, 16-bit integer)
-        - 3: RGB444 (RGB 4-bit per pixel, packed)
+        - 3: RGB444I16 (RGB 4-bit per pixel)
        
     - Frame count: 4-bytes. The number of frames in the file. Stored as an unsigned 32-bit integer. If the file contains a single frame, this field is 0, and it may be treated as an image.
     - Fps: The number of frames per second the file was recorded at. Encoded as a 32bit float.
