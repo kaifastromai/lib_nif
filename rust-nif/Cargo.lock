@@ -58,7 +58,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "rust-nif"
+name = "nif"
 version = "0.1.0"
 dependencies = [
  "flate2",

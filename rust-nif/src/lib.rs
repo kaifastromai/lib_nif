@@ -311,6 +311,8 @@ pub mod nif {
             if magic_number != MAGIC_NUMBER {
                 panic!("Invalid magic number. This is not a NIF file.");
             }
+            let mut feature_flags = [0; 4];
+            buffered_reader.read_exact(&mut feature_flags).unwrap();
             let mut version_buf = [0; 4];
             buffered_reader.read_exact(&mut version_buf).unwrap();
             let version = u32::from_be_bytes(version_buf);
@@ -373,7 +375,8 @@ pub mod nif {
         pub fn write_to_file(&self, path: &Path) {
             let mut buffered_writer = std::io::BufWriter::new(std::fs::File::create(path).unwrap());
             let mut magic_number = [0; 4];
-            magic_number.copy_from_slice(&self.version.to_be_bytes());
+            magic_number.copy_from_slice(&MAGIC_NUMBER.to_be_bytes());
+
             buffered_writer.write_all(&magic_number).unwrap();
             let mut version_buf = [0; 4];
             version_buf.copy_from_slice(&self.version.to_be_bytes());
@@ -397,7 +400,8 @@ pub mod nif {
                     header_buf[8..12].copy_from_slice(&3_u32.to_be_bytes());
                 }
             }
-
+            header_buf[12..16].copy_from_slice(&self.header.frame_count.to_be_bytes());
+            header_buf[16..20].copy_from_slice(&self.header.frame_rate.to_be_bytes());
             buffered_writer.write_all(&header_buf).unwrap();
             for frame in &self.data {
                 buffered_writer.write_all(&frame.data).unwrap();

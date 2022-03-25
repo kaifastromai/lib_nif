@@ -1,11 +1,11 @@
 [package]
-name = "rust-nif"
+name = "nif"
 version = "0.1.0"
 edition = "2021"
+description = "A simple library for the nif image format"
 
 [lib]
 crate-type = ["lib"]
-
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
