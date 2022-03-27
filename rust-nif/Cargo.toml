@@ -11,3 +11,4 @@ crate-type = ["lib"]
 
 [dependencies]
 flate2 = "1.0.22"
+rand = "*"

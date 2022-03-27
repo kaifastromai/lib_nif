@@ -1,12 +1,17 @@
 pub mod nif {
     use std::{
-        io::{Read, Write},
+        fs::File,
+        io::{BufRead, BufReader, BufWriter, Read, Result, Write},
         path::Path,
     };
+
+    use flate2::{bufread::GzDecoder, write::GzEncoder};
     //Magic number for NIF file
-    const MAGIC_NUMBER: u32 = 0x4E494600;
-    const CURRENT_VERSION: u32 = 0x00010000;
-    const HEADER_SIZE: usize = 0x14;
+    pub const MAGIC_NUMBER: u32 = 0x4E494600;
+    pub const CURRENT_VERSION: u32 = 0x00010000;
+    pub const HEADER_SIZE: usize = 0x14;
+    pub const FEATURE_FLAGS_COMPRESSION: u32 = 0x1;
+
     //describes how the pixel data is stored
     #[derive(Clone, Copy, PartialEq, Eq, Debug)]
     pub enum Pixel {
@@ -19,7 +24,7 @@ pub mod nif {
         fn get_size(&self) -> usize {
             match self {
                 Pixel::RGBA8888(_) => 4,
-                Pixel::RGB888(_) => 3,
+                Pixel::RGB888(_) => 4,
                 Pixel::RGBA4444(_) => 2,
                 Pixel::RGB444(_) => 2,
             }
@@ -87,7 +92,7 @@ pub mod nif {
             (self.rgb >> 8) as u8
         }
         fn b(&self) -> u8 {
-            (self.rgb >> 0) as u8
+            self.rgb as u8
         }
         fn set_r(&mut self, r: u8) {
             self.rgb = (self.rgb & 0x0FFF) | ((r as u16) << 12);
@@ -102,19 +107,7 @@ pub mod nif {
             self.rgb
         }
     }
-    //impl into u16 for Pixel16I
-    impl Into<u16> for Pixel16U {
-        fn into(self) -> u16 {
-            self.rgb
-        }
-    }
 
-    //impl Into<u32> for Pixel32I
-    impl Into<u32> for Pixel32U {
-        fn into(self) -> u32 {
-            self.rgba
-        }
-    }
     //impl from u32 for Pixel32I
     impl From<u32> for Pixel32U {
         fn from(rgba: u32) -> Pixel32U {
@@ -137,42 +130,35 @@ pub mod nif {
         pub frame_count: u32,
         pub frame_rate: f32,
     }
+    #[derive(PartialEq, Eq, Ord, PartialOrd, Debug)]
     pub struct Frame {
-        data: Vec<u8>,
-        header: Box<Header>,
+        pub data: Vec<u8>,
     }
     impl Frame {
-        pub fn from(data: Vec<u8>, header: &Header) -> Self {
-            let head_box = Box::new(*header);
-            Self {
-                data,
-                header: head_box,
-            }
+        pub fn from(data: Vec<u8>) -> Self {
+            Self { data }
         }
-        pub fn new(header: &Header) -> Self {
+        pub fn new(header: Header) -> Self {
             //create a new frame with black pixels
             let data =
                 vec![
                     0;
                     header.width as usize * header.height as usize * header.pixel_format.get_size()
                 ];
-            Self {
-                data,
-                header: Box::new(*header),
-            }
+            Self { data }
         }
-        pub fn get_pixel(&self, x: u32, y: u32) -> Pixel {
-            let pixel_size = match &self.header.pixel_format {
+        pub fn get_pixel(&self, x: u32, y: u32, header: Header) -> Pixel {
+            let pixel_size = match header.pixel_format {
                 Pixel::RGBA8888(_) => 4,
                 Pixel::RGB888(_) => 4,
                 Pixel::RGBA4444(_) => 2,
                 Pixel::RGB444(_) => 2,
             };
-            let pixel_offset = (y * self.header.width + x) * pixel_size;
+            let pixel_offset = (y * header.width + x) * pixel_size;
             let range = pixel_offset as usize..(pixel_offset + pixel_size) as usize;
             let pixel_data = &self.data[range];
 
-            match &self.header.pixel_format {
+            match &header.pixel_format {
                 Pixel::RGBA8888(_) => Pixel::RGBA8888(Pixel32U::from_u32(u32::from_be_bytes(
                     pixel_data.try_into().unwrap(),
                 ))),
@@ -187,14 +173,14 @@ pub mod nif {
                 ))),
             }
         }
-        pub fn set_pixel(&mut self, x: u32, y: u32, pixel: Pixel) {
-            let pixel_size = match self.header.pixel_format {
+        pub fn set_pixel(&mut self, x: u32, y: u32, pixel: Pixel, header: Header) {
+            let pixel_size = match header.pixel_format {
                 Pixel::RGBA8888(_) => 4,
                 Pixel::RGB888(_) => 4,
                 Pixel::RGBA4444(_) => 2,
                 Pixel::RGB444(_) => 2,
             };
-            let pixel_offset = (y * self.header.width + x) * pixel_size;
+            let pixel_offset = (y * header.width + x) * pixel_size;
             let range = pixel_offset as usize..(pixel_offset + pixel_size) as usize;
             let pixel_data = &mut self.data[range];
 
@@ -210,26 +196,29 @@ pub mod nif {
             }
         }
     }
-    //impl Into PixelIterator for Frame
-    impl<'b> IntoIterator for &'b Frame {
-        type Item = Pixel;
-        type IntoIter = PixelIterator<'b>;
-        fn into_iter(self) -> Self::IntoIter {
-            PixelIterator {
-                frame: self,
-                current_pixel: 0,
-            }
-        }
-    }
+    // //impl Into PixelIterator for Frame
+    // impl<'b> IntoIterator for &'b Frame {
+    //     type Item = Pixel;
+    //     type IntoIter = PixelIterator<'b>;
+    //     fn into_iter(self) -> Self::IntoIter {
+    //         PixelIterator {
+    //             frame: self,
+    //             current_pixel: 0,
+
+    //         }
+    //     }
+    // }
     pub struct PixelIterator<'b> {
         frame: &'b Frame,
+        header: &'b Header,
         current_pixel: u32,
     }
     impl<'b> PixelIterator<'b> {
-        fn new(frame: &'b Frame) -> Self {
+        fn new(frame: &'b Frame, header: &'b Header) -> Self {
             Self {
                 frame,
                 current_pixel: 0,
+                header,
             }
         }
     }
@@ -237,7 +226,7 @@ pub mod nif {
     impl<'b> Iterator for PixelIterator<'b> {
         type Item = Pixel;
         fn next(&mut self) -> Option<Self::Item> {
-            let pixel_size = match self.frame.header.pixel_format {
+            let pixel_size = match self.header.pixel_format {
                 Pixel::RGBA8888(_) => 4,
                 Pixel::RGB888(_) => 4,
                 Pixel::RGBA4444(_) => 2,
@@ -247,8 +236,8 @@ pub mod nif {
             let range = pixel_offset as usize..(pixel_offset + pixel_size) as usize;
             let pixel_data = &self.frame.data[range];
             self.current_pixel += 1;
-            if self.current_pixel < self.frame.header.width * self.frame.header.height {
-                match self.frame.header.pixel_format {
+            if self.current_pixel < self.header.width * self.header.height {
+                match self.header.pixel_format {
                     Pixel::RGBA8888(_) => Some(Pixel::RGBA8888(
                         u32::from_be_bytes(pixel_data.try_into().unwrap()).into(),
                     )),
@@ -270,14 +259,16 @@ pub mod nif {
 
     pub struct Nif {
         pub version: u32,
+        pub features: u32,
         pub header: Header,
-        data: Vec<Frame>,
+        frames: Vec<Frame>,
     }
 
     impl Nif {
         pub fn new_default() -> Self {
             Nif {
                 version: CURRENT_VERSION,
+                features: 0,
                 header: Header {
                     width: 0,
                     height: 0,
@@ -285,43 +276,54 @@ pub mod nif {
                     frame_count: 0,
                     frame_rate: 0.0,
                 },
-                data: Vec::new(),
+                frames: Vec::new(),
             }
         }
         pub fn new(header: Header) -> Self {
             Nif {
                 version: CURRENT_VERSION,
+                features: 0,
                 header,
-                data: Vec::new(),
+                frames: Vec::new(),
             }
         }
         //Returns an iterator over the pixels of the frame at index
         pub fn get_frame(&mut self, index: u32) -> Option<&mut Frame> {
             if index < self.header.frame_count {
-                Some(&mut self.data[index as usize])
+                Some(&mut self.frames[index as usize])
             } else {
                 None
             }
         }
-        pub fn read_from_file(&mut self, path: &Path) {
-            let mut buffered_reader = std::io::BufReader::new(std::fs::File::open(path).unwrap());
+        pub fn get_frames(&self) -> &Vec<Frame> {
+            &self.frames
+        }
+        pub fn get_frames_mut(&mut self) -> &mut Vec<Frame> {
+            &mut self.frames
+        }
+        pub fn read_from_file(&mut self, path: &Path) -> Result<()> {
+            let mut buf = std::io::BufReader::new(std::fs::File::open(path).unwrap());
             let mut magic_number = [0; 4];
-            buffered_reader.read_exact(&mut magic_number).unwrap();
+            buf.read_exact(&mut magic_number).unwrap();
             let magic_number = u32::from_be_bytes(magic_number);
             if magic_number != MAGIC_NUMBER {
                 panic!("Invalid magic number. This is not a NIF file.");
             }
-            let mut feature_flags = [0; 4];
-            buffered_reader.read_exact(&mut feature_flags).unwrap();
+
             let mut version_buf = [0; 4];
-            buffered_reader.read_exact(&mut version_buf).unwrap();
+            buf.read_exact(&mut version_buf).unwrap();
             let version = u32::from_be_bytes(version_buf);
             if version > CURRENT_VERSION {
                 panic!("Invalid version. This NIF file is not supported.");
             }
+            let mut feature_flags = [0; 4];
+            buf.read_exact(&mut feature_flags).unwrap();
+            let feature_flags = u32::from_be_bytes(feature_flags);
+
             self.version = version;
+            self.features = feature_flags;
             let mut header_buf = [0; HEADER_SIZE];
-            buffered_reader.read_exact(&mut header_buf).unwrap();
+            buf.read_exact(&mut header_buf).unwrap();
             let header: Header = Header {
                 width: u32::from_be_bytes(header_buf[0..4].try_into().unwrap()),
                 height: u32::from_be_bytes(header_buf[4..8].try_into().unwrap()),
@@ -336,53 +338,54 @@ pub mod nif {
                 frame_rate: f32::from_be_bytes(header_buf[16..20].try_into().unwrap()),
             };
             self.header = header;
-            let mut frames = Vec::with_capacity(self.header.frame_count as usize);
-            for _ in 0..self.header.frame_count {
-                let data = match self.header.pixel_format {
-                    Pixel::RGBA8888(_) => {
-                        let mut data =
-                            vec![0; self.header.width as usize * self.header.height as usize * 4];
-                        buffered_reader.read_exact(&mut data).unwrap();
-                        data
-                    }
-                    Pixel::RGB888(_) => {
-                        let mut data =
-                            vec![0; self.header.width as usize * self.header.height as usize * 3];
-                        buffered_reader.read_exact(&mut data).unwrap();
-                        data
-                    }
-                    Pixel::RGBA4444(_) => {
-                        let mut data =
-                            vec![0; self.header.width as usize * self.header.height as usize * 2];
-                        buffered_reader.read_exact(&mut data).unwrap();
-                        data
-                    }
-                    Pixel::RGB444(_) => {
-                        let mut data =
-                            vec![0; self.header.width as usize * self.header.height as usize * 2];
-                        buffered_reader.read_exact(&mut data).unwrap();
-                        data
-                    }
-                };
-
-                frames.push(Frame {
-                    data,
-                    header: Box::from(self.header),
-                });
+            if feature_flags & FEATURE_FLAGS_COMPRESSION != 0 {
+                self.read_compressed(&header, &mut buf)
+            } else {
+                self.read_uncompressed(&header, &mut buf)
             }
         }
 
-        pub fn write_to_file(&self, path: &Path) {
-            let mut buffered_writer = std::io::BufWriter::new(std::fs::File::create(path).unwrap());
-            let mut magic_number = [0; 4];
-            magic_number.copy_from_slice(&MAGIC_NUMBER.to_be_bytes());
+        pub fn read_uncompressed(
+            &mut self,
+            header: &Header,
+            buf: &mut BufReader<File>,
+        ) -> Result<()> {
+            Ok(())
+        }
 
-            buffered_writer.write_all(&magic_number).unwrap();
-            let mut version_buf = [0; 4];
-            version_buf.copy_from_slice(&self.version.to_be_bytes());
+        pub fn read_compressed(
+            &mut self,
+            header: &Header,
+            buf: &mut BufReader<File>,
+        ) -> Result<()> {
+            let mut dec = GzDecoder::new(buf);
+
+            let bit_depth = match header.pixel_format {
+                Pixel::RGBA8888(_) => 4,
+                Pixel::RGB888(_) => 4,
+                Pixel::RGBA4444(_) => 2,
+                Pixel::RGB444(_) => 2,
+            };
+            let data_per_frame = header.width as usize * header.height as usize * bit_depth;
+
+            for _ in 0..header.frame_count {
+                let mut frame_data = vec![0; data_per_frame];
+                dec.read_exact(&mut frame_data).unwrap();
+                self.frames.push(Frame { data: frame_data });
+            }
+            Ok(())
+        }
+
+        pub fn write(&self, path: &Path, features: u32) -> std::io::Result<()> {
+            let mut buf = std::io::BufWriter::new(std::fs::File::create(path).unwrap());
+            buf.write_all(&MAGIC_NUMBER.to_be_bytes()).unwrap();
             //write four empty bytes for feature flags
-            buffered_writer.write_all(&[0, 0, 0, 0]).unwrap();
-            buffered_writer.write_all(&version_buf).unwrap();
+            //write_version
+            buf.write_all(&self.version.to_be_bytes()).unwrap();
+            //write features
+            buf.write_all(&features.to_be_bytes()).unwrap();
+
+            //write rest of header
             let mut header_buf = [0; HEADER_SIZE];
             header_buf[0..4].copy_from_slice(&self.header.width.to_be_bytes());
             header_buf[4..8].copy_from_slice(&self.header.height.to_be_bytes());
@@ -402,16 +405,34 @@ pub mod nif {
             }
             header_buf[12..16].copy_from_slice(&self.header.frame_count.to_be_bytes());
             header_buf[16..20].copy_from_slice(&self.header.frame_rate.to_be_bytes());
-            buffered_writer.write_all(&header_buf).unwrap();
-            for frame in &self.data {
-                buffered_writer.write_all(&frame.data).unwrap();
+            buf.write_all(&header_buf).unwrap();
+
+            if features & FEATURE_FLAGS_COMPRESSION != 0 {
+                self.write_compressed(&mut buf)
+            } else {
+                self.write_uncompressed(&mut buf)
             }
         }
         pub fn new_empty_frame(&mut self) {
             self.header.frame_count += 1;
-            let hd: &Header = &self.header;
+            let hd = self.header;
             let frame = Frame::new(hd);
-            self.data.push(frame);
+            self.frames.push(frame);
+        }
+        pub fn write_compressed(&self, buf: &mut BufWriter<File>) -> Result<()> {
+            use flate2::*;
+            let mut encoder = GzEncoder::new(buf, Compression::default());
+            for frame in &self.frames {
+                encoder.write_all(&frame.data)?;
+            }
+            Ok(())
+        }
+
+        pub fn write_uncompressed(&self, buf: &mut BufWriter<File>) -> Result<()> {
+            for frame in &self.frames {
+                buf.write_all(&frame.data)?;
+            }
+            Ok(())
         }
     }
 }
@@ -420,7 +441,9 @@ pub mod nif {
 mod test_super {
     use std::path::Path;
 
-    use crate::nif::{Header, Nif, Pixel, Pixel32U};
+    use rand::Rng;
+
+    use crate::nif::{Header, Nif, Pixel, Pixel32U, FEATURE_FLAGS_COMPRESSION};
     #[test]
     fn test_access_pixels() {
         let mut nif = Nif::new(Header {
@@ -433,6 +456,7 @@ mod test_super {
 
         nif.new_empty_frame();
 
+        let hd = nif.header;
         let frame = nif.get_frame(0).unwrap();
         for i in 0..10 {
             for j in 0..10 {
@@ -440,12 +464,13 @@ mod test_super {
                     i,
                     j,
                     Pixel::RGBA8888(Pixel32U::from_rgba(i as u8, j as u8, 0, 0)),
+                    hd,
                 );
             }
         }
         for i in 0..10 {
             for j in 0..10 {
-                let pixel = frame.get_pixel(i, j);
+                let pixel = frame.get_pixel(i, j, hd);
                 match pixel {
                     Pixel::RGBA8888(p) => {
                         assert_eq!(p.r(), i as u8);
@@ -469,31 +494,133 @@ mod test_super {
         });
 
         nif.new_empty_frame();
-
-        let frame = nif.get_frame(0).unwrap();
-        for i in 0..400 {
-            for j in 0..400 {
-                frame.set_pixel(
-                    i,
-                    j,
-                    Pixel::RGBA8888(Pixel32U::from_rgba(
-                        (i % 0xFF) as u8,
-                        (j & 0xFF) as u8,
-                        0,
-                        0,
-                    )),
-                );
+        let hd = nif.header;
+        {
+            let frame = nif.get_frame(0).unwrap();
+            for i in 0..400 {
+                for j in 0..400 {
+                    frame.set_pixel(
+                        i,
+                        j,
+                        Pixel::RGBA8888(Pixel32U::from_rgba(
+                            (i % 0xFF) as u8,
+                            (j & 0xFF) as u8,
+                            0,
+                            0,
+                        )),
+                        hd,
+                    );
+                }
             }
         }
-        nif.write_to_file(Path::new("test.nif"));
-
+        //uncompressed
+        nif.write(Path::new("test.nif"), 0).unwrap();
         let mut nif_read = Nif::new_default();
-        nif_read.read_from_file(Path::new("test.nif"));
+        nif_read.read_from_file(Path::new("test.nif")).unwrap();
         //compare the two nif heads
-        assert_eq!(nif.header.width, nif_read.header.width);
-        assert_eq!(nif.header.height, nif_read.header.height);
-        assert_eq!(nif.header.pixel_format, nif_read.header.pixel_format);
-        assert_eq!(nif.header.frame_count, nif_read.header.frame_count);
-        assert_eq!(nif.header.frame_rate, nif_read.header.frame_rate);
+        {
+            assert_eq!(nif.header.width, nif_read.header.width);
+            assert_eq!(nif.header.height, nif_read.header.height);
+            assert_eq!(nif.header.pixel_format, nif_read.header.pixel_format);
+            assert_eq!(nif.header.frame_count, nif_read.header.frame_count);
+            assert_eq!(nif.header.frame_rate, nif_read.header.frame_rate);
+        }
+        //compare the frames
+        for frame_pair in nif.get_frames().iter().zip(nif_read.get_frames().iter()) {
+            assert_eq!(&frame_pair.0, &frame_pair.1);
+        }
+
+        //compressed
+        nif.write(Path::new("test_comp.nif"), FEATURE_FLAGS_COMPRESSION)
+            .unwrap();
+
+        let mut nif_read_comp = Nif::new_default();
+        nif_read_comp
+            .read_from_file(Path::new("test_comp.nif"))
+            .unwrap();
+        //compare the two nif heads
+        assert_eq!(nif.header.width, nif_read_comp.header.width);
+        assert_eq!(nif.header.height, nif_read_comp.header.height);
+        assert_eq!(nif.header.pixel_format, nif_read_comp.header.pixel_format);
+        assert_eq!(nif.header.frame_count, nif_read_comp.header.frame_count);
+        assert_eq!(nif.header.frame_rate, nif_read_comp.header.frame_rate);
+        //compare the frames
+        for frame_pair in nif
+            .get_frames()
+            .iter()
+            .zip(nif_read_comp.get_frames().iter())
+        {
+            assert_eq!(&frame_pair.0, &frame_pair.1);
+        }
+    }
+    #[test]
+    fn test_serialize_random() {
+        let mut nif = Nif::new(Header {
+            width: 400,
+            height: 400,
+            pixel_format: Pixel::RGBA8888(0.into()),
+            frame_count: 0,
+            frame_rate: 0.0,
+        });
+        let mut rng = rand::thread_rng();
+
+        nif.new_empty_frame();
+        let hd = nif.header;
+        {
+            let frame = nif.get_frame(0).unwrap();
+            for i in 0..400 {
+                for j in 0..400 {
+                    frame.set_pixel(
+                        i,
+                        j,
+                        Pixel::RGBA8888(Pixel32U::from_rgba(
+                            rng.gen(),
+                            rng.gen(),
+                            rng.gen(),
+                            rng.gen(),
+                        )),
+                        hd,
+                    );
+                }
+            }
+        }
+        //uncompressed
+        nif.write(Path::new("test_rng.nif"), 0).unwrap();
+        let mut nif_read = Nif::new_default();
+        nif_read.read_from_file(Path::new("test_rng.nif")).unwrap();
+        //compare the two nif heads
+        {
+            assert_eq!(nif.header.width, nif_read.header.width);
+            assert_eq!(nif.header.height, nif_read.header.height);
+            assert_eq!(nif.header.pixel_format, nif_read.header.pixel_format);
+            assert_eq!(nif.header.frame_count, nif_read.header.frame_count);
+            assert_eq!(nif.header.frame_rate, nif_read.header.frame_rate);
+        }
+        //compare the frames
+        for frame_pair in nif.get_frames().iter().zip(nif_read.get_frames().iter()) {
+            assert_eq!(&frame_pair.0, &frame_pair.1);
+        }
+
+        //compressed
+        nif.write(Path::new("test_comp_rng.nif"), FEATURE_FLAGS_COMPRESSION)
+            .unwrap();
+        let mut nif_read_comp = Nif::new_default();
+        nif_read_comp
+            .read_from_file(Path::new("test_comp_rng.nif"))
+            .unwrap();
+        //compare the two nif heads
+        assert_eq!(nif.header.width, nif_read_comp.header.width);
+        assert_eq!(nif.header.height, nif_read_comp.header.height);
+        assert_eq!(nif.header.pixel_format, nif_read_comp.header.pixel_format);
+        assert_eq!(nif.header.frame_count, nif_read_comp.header.frame_count);
+        assert_eq!(nif.header.frame_rate, nif_read_comp.header.frame_rate);
+        //compare the frames
+        for frame_pair in nif
+            .get_frames()
+            .iter()
+            .zip(nif_read_comp.get_frames().iter())
+        {
+            assert_eq!(&frame_pair.0, &frame_pair.1);
+        }
     }
 }
